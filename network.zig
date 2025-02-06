@@ -676,18 +676,19 @@ pub const Socket = struct {
     /// Non-Blockingly peeks at data from the connected peer.
     /// Will not change the stream state.
     pub fn peek(self: Self, data: []u8) ReceiveError!usize {
-        const recvfrom_fn = if (is_windows) windows.recvfrom else std.posix.recvfrom;
-        const flags = if (is_windows) 0x2 else std.os.linux.MSG.PEEK;
-        return try recvfrom_fn(self.internal, data, flags, null, null);
+        const flags = if (is_windows)
+            std.os.windows.ws2_32.MSG.PEEK
+        else
+            std.os.linux.MSG.PEEK;
+        return try std.posix.recvfrom(self.internal, data, flags, null, null);
     }
 
     /// Blockingly receives some data from the connected peer.
     /// Will read all available data from the TCP stream or
     /// a UDP packet.
     pub fn receive(self: Self, data: []u8) ReceiveError!usize {
-        const recvfrom_fn = if (is_windows) windows.recvfrom else std.posix.recvfrom;
         const flags = if (is_windows or is_bsd) 0 else std.os.linux.MSG.NOSIGNAL;
-        return try recvfrom_fn(self.internal, data, flags, null, null);
+        return try std.posix.recvfrom(self.internal, data, flags, null, null);
     }
 
     const ReceiveFrom = struct { numberOfBytes: usize, sender: EndPoint };
@@ -695,7 +696,6 @@ pub const Socket = struct {
     /// Same as ´receive`, but will also return the end point from which the data
     /// was received. This is only a valid operation on UDP sockets.
     pub fn receiveFrom(self: Self, data: []u8) !ReceiveFrom {
-        const recvfrom_fn = if (is_windows) windows.recvfrom else std.posix.recvfrom;
         const flags = if (is_linux) std.os.linux.MSG.NOSIGNAL else 0;
 
         // Use the ipv6 sockaddr to guarantee data will fit.
@@ -703,7 +703,13 @@ pub const Socket = struct {
         var size: std.posix.socklen_t = @sizeOf(std.posix.sockaddr.in6);
 
         const addr_ptr: *std.posix.sockaddr = @ptrCast(&addr);
-        const len = try recvfrom_fn(self.internal, data, flags | if (is_windows) 0 else 4, addr_ptr, &size);
+        const len = try std.posix.recvfrom(
+            self.internal,
+            data,
+            flags | if (is_windows) 0 else 4,
+            addr_ptr,
+            &size,
+        );
 
         return ReceiveFrom{
             .numberOfBytes = len,
@@ -1470,7 +1476,6 @@ const windows = struct {
     };
 
     const funcs = struct {
-        extern "ws2_32" fn recvfrom(s: ws2_32.SOCKET, buf: [*c]u8, len: c_int, flags: c_int, from: [*c]std.posix.sockaddr, fromlen: [*c]std.posix.socklen_t) callconv(std.os.windows.WINAPI) c_int;
         extern "ws2_32" fn select(nfds: c_int, readfds: ?*anyopaque, writefds: ?*anyopaque, exceptfds: ?*anyopaque, timeout: [*c]const timeval) callconv(std.os.windows.WINAPI) c_int;
         extern "ws2_32" fn __WSAFDIsSet(arg0: ws2_32.SOCKET, arg1: [*]u8) c_int;
         extern "ws2_32" fn getaddrinfo(nodename: [*:0]const u8, servicename: [*:0]const u8, hints: *const posix.addrinfo, result: **posix.addrinfo) callconv(std.os.windows.WINAPI) c_int;
@@ -1512,35 +1517,6 @@ const windows = struct {
         }
 
         return sock;
-    }
-
-    // NOTE: The `recvfrom` implementation in upstream Zig `std` is marked as
-    // an `extern "c"` function, and thus replacing the below implementation
-    // causes Windows to require linking `libc`.
-    fn recvfrom(
-        sock: ws2_32.SOCKET,
-        buf: []u8,
-        flags: u32,
-        src_addr: ?*std.posix.sockaddr,
-        addrlen: ?*std.posix.socklen_t,
-    ) std.posix.RecvFromError!usize {
-        while (true) {
-            const result = funcs.recvfrom(sock, buf.ptr, @intCast(buf.len), @intCast(flags), src_addr, addrlen);
-            if (result == ws2_32.SOCKET_ERROR) {
-                return switch (ws2_32.WSAGetLastError()) {
-                    .WSAEFAULT => unreachable,
-                    .WSAEINVAL => unreachable,
-                    .WSAEISCONN => unreachable,
-                    .WSAENOTSOCK => unreachable,
-                    .WSAESHUTDOWN => unreachable,
-                    .WSAEOPNOTSUPP => unreachable,
-                    .WSAETIMEDOUT, .WSAEWOULDBLOCK => error.WouldBlock,
-                    .WSAEINTR => continue,
-                    else => |err| return unexpectedWSAError(err),
-                };
-            }
-            return @intCast(result);
-        }
     }
 
     pub const SelectError = error{FileDescriptorNotASocket} || std.posix.UnexpectedError;
