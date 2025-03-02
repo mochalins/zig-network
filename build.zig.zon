@@ -1,11 +1,11 @@
 .{
-    .name = "network",
+    .name = .network,
     .version = "0.1.0",
+    .fingerprint = 0x608487bc08781dc2,
     .paths = .{
         "build.zig",
         "build.zig.zon",
         "LICENSE",
         "network.zig",
-        "testsuite.zig",
     },
 }
